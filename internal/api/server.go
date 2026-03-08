@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"regexp"
 
-	"github.com/st3v3nmw/little-key-value/internal/store"
+	"github.com/clstr-io/key-value-go/internal/store"
 )
 
 const (

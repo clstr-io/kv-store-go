@@ -1,3 +1,3 @@
 #!/bin/bash -e
 
-exec go run ./cmd/little-key-value "$@"
+exec go run ./cmd/key-value-go "$@"

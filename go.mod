@@ -1,3 +1,3 @@
-module github.com/st3v3nmw/little-key-value
+module github.com/clstr-io/key-value-go
 
 go 1.25

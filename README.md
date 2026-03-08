@@ -1,10 +1,10 @@
-# Little Key-Value Store
+# clstr.io Key-Value Store
 
-Reference implementation for the [LittleClusters distributed key-value store challenge](https://littleclusters.com/).
+Reference implementation for the [clstr.io distributed key-value store challenge](https://clstr.io/).
 
 ## Architecture
 
-Little Key-Value Store is a persistent HTTP-based key-value store built in layers. The HTTP API handles client requests and validation, while the storage layer provides in-memory access with durability guarantees through write-ahead logging.
+Key-Value Store is a persistent HTTP-based key-value store built in layers. The HTTP API handles client requests and validation, while the storage layer provides in-memory access with durability guarantees through write-ahead logging.
 
 ### Storage Layer
 
@@ -39,18 +39,18 @@ All write operations (PUT, DELETE, CLEAR) go through the WAL and exhibit similar
 ## Running
 
 ```console
-$ go build -o little-key-value ./cmd/little-key-value
-$ ./little-key-value --port 8080 --working-dir ./data
+$ go build -o key-value-go ./cmd/key-value-go
+$ ./key-value-go --port 8080 --working-dir ./data
 ```
 
 The server persists all data to the specified working directory and recovers it on restart. Graceful shutdown (Ctrl+C or SIGTERM) ensures proper cleanup and data integrity.
 
 ## Testing
 
-Test with [lc](https://littleclusters.com/guides/cli/):
+Test with [clstr](https://docs.clstr.io/guides/cli/):
 
 ```console
-$ lc test http-api
-$ lc test persistence
-$ lc test <stage>
+$ clstr test http-api
+$ clstr test persistence
+$ clstr test <stage>
 ```

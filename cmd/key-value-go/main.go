@@ -10,12 +10,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/st3v3nmw/little-key-value/internal/api"
-	"github.com/st3v3nmw/little-key-value/internal/store"
+	"github.com/clstr-io/key-value-go/internal/api"
+	"github.com/clstr-io/key-value-go/internal/store"
 )
 
 func main() {
-	log.Print("starting Little Key-Value Store...")
+	log.Print("starting Key-Value Store...")
 
 	port := flag.String("port", "", "Port to run the server on")
 	workingDir := flag.String("working-dir", "", "Directory for data persistence")
