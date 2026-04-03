@@ -47,7 +47,7 @@ The server persists all data to the specified working directory and recovers it 
 
 ## Testing
 
-Test with [clstr](https://docs.clstr.io/guides/cli/):
+Test with [clstr](https://clstr.io/guides/cli/):
 
 ```console
 $ clstr test http-api

@@ -21,9 +21,10 @@ func main() {
 
 	port := flag.String("port", "8080", "Port to run the server on")
 	peersFlag := flag.String("peers", "", "List of peer nodes")
+	dataDir := flag.String("data-dir", "/app/data", "Directory to store data")
 	flag.Parse()
 
-	dir := "/app/data"
+	dir := *dataDir
 	ds, err := store.NewDiskStore(dir)
 	if err != nil {
 		log.Fatalf("Failed to create disk store: %v", err)
