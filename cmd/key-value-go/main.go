@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -15,23 +17,21 @@ import (
 )
 
 func main() {
-	log.Print("starting Key-Value Store...")
+	log.Print("Starting Key-Value Store...")
 
-	port := flag.String("port", "", "Port to run the server on")
-	workingDir := flag.String("working-dir", "", "Directory for data persistence")
+	port := flag.String("port", "8080", "Port to run the server on")
+	peersFlag := flag.String("peers", "", "List of peer nodes")
 	flag.Parse()
 
-	if *port == "" {
-		log.Fatal("--port parameter is required")
-	}
-
-	if *workingDir == "" {
-		log.Fatal("--working-dir parameter is required")
-	}
-
-	ds, err := store.NewDiskStore(*workingDir)
+	dir := "/app/data"
+	ds, err := store.NewDiskStore(dir)
 	if err != nil {
-		log.Fatalf("failed to create disk store: %v", err)
+		log.Fatalf("Failed to create disk store: %v", err)
+	}
+
+	peers := strings.Split(*peersFlag, ",")
+	for i, peer := range peers {
+		peers[i] = fmt.Sprintf("http://%s", peer)
 	}
 
 	server := api.New(ds)
@@ -43,13 +43,13 @@ func main() {
 		}
 	}()
 
-	log.Printf("server started on port %s", *port)
+	log.Printf("Server started on port %s", *port)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT) // Graceful shutdown on SIGTERM or Ctrl+C
 
 	<-quit
-	log.Print("shutting down...")
+	log.Print("Shutting down...")
 
 	// Graceful shutdown: wait up to 15s for in-flight requests to complete.
 	// This should be generous for most workloads (requests typically complete
@@ -59,7 +59,7 @@ func main() {
 
 	err = server.Shutdown(ctx)
 	if err != nil {
-		log.Printf("error while shutting down: %v", err)
+		log.Printf("Error while shutting down: %v", err)
 	}
 
 	// Print stats before closing store so we see final performance metrics.
@@ -68,8 +68,8 @@ func main() {
 	// Close flushes pending batches, snapshots state, and truncates WAL.
 	err = ds.Close()
 	if err != nil {
-		log.Printf("failed to close log: %v", err)
+		log.Printf("Failed to close log: %v", err)
 	}
 
-	log.Print("server stopped")
+	log.Print("Server stopped")
 }

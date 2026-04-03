@@ -87,6 +87,20 @@ func (rs *requestStats) record(method, path string, status int, duration time.Du
 	stats.statusCodes[status]++
 }
 
+// fmtDuration formats a duration to 2 decimal places using the most appropriate unit.
+func fmtDuration(d time.Duration) string {
+	switch {
+	case d < time.Microsecond:
+		return fmt.Sprintf("%.2fns", float64(d))
+	case d < time.Millisecond:
+		return fmt.Sprintf("%.2fµs", float64(d)/float64(time.Microsecond))
+	case d < time.Second:
+		return fmt.Sprintf("%.2fms", float64(d)/float64(time.Millisecond))
+	default:
+		return fmt.Sprintf("%.2fs", float64(d)/float64(time.Second))
+	}
+}
+
 // printStats prints aggregate request statistics.
 func (rs *requestStats) printStats() {
 	rs.mu.Lock()
@@ -146,8 +160,8 @@ func (rs *requestStats) printStats() {
 		}
 		statusStr := strings.Join(statusParts, ", ")
 
-		log.Printf("  %s: %d requests, avg %v, min %v, max %v (%s)",
-			r.route, r.stats.count, avgDur, r.stats.minDur, r.stats.maxDur, statusStr)
+		log.Printf("  %s: %d requests, avg %s, min %s, max %s (%s)",
+			r.route, r.stats.count, fmtDuration(avgDur), fmtDuration(r.stats.minDur), fmtDuration(r.stats.maxDur), statusStr)
 	}
 }
 
