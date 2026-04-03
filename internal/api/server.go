@@ -91,6 +91,15 @@ func (s *Server) Serve(addr string) error {
 		}
 	})
 
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
 	s.api = &http.Server{Addr: addr, Handler: loggingMiddleware(s.stats)(mux)}
 
 	return s.api.ListenAndServe()
