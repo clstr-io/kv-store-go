@@ -58,7 +58,7 @@ type batchRequest struct {
 type DiskStore struct {
 	memory *MemoryStore
 
-	workingDir   string
+	dataDir      string
 	snapshotPath string
 	walPath      string
 	wal          *os.File
@@ -76,9 +76,9 @@ type DiskStore struct {
 
 // NewDiskStore creates a new persistent store that saves data to the specified directory.
 // Any previously saved state is restored on initialization.
-func NewDiskStore(workingDir string) (*DiskStore, error) {
-	snapshotPath := filepath.Join(workingDir, "snapshot.json")
-	logPath := filepath.Join(workingDir, "wal.jsonl")
+func NewDiskStore(dataDir string) (*DiskStore, error) {
+	snapshotPath := filepath.Join(dataDir, "snapshot.json")
+	logPath := filepath.Join(dataDir, "wal.jsonl")
 
 	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -87,7 +87,7 @@ func NewDiskStore(workingDir string) (*DiskStore, error) {
 
 	ds := &DiskStore{
 		memory:       NewMemoryStore(),
-		workingDir:   workingDir,
+		dataDir:      dataDir,
 		snapshotPath: snapshotPath,
 		walPath:      logPath,
 		wal:          logFile,

@@ -40,10 +40,10 @@ All write operations (PUT, DELETE, CLEAR) go through the WAL and exhibit similar
 
 ```console
 $ go build -o key-value-go ./cmd/key-value-go
-$ ./key-value-go --port 8080 --working-dir ./data
+$ ./key-value-go --port 8080 --data-dir ./data
 ```
 
-The server persists all data to the specified working directory and recovers it on restart. Graceful shutdown (Ctrl+C or SIGTERM) ensures proper cleanup and data integrity.
+The server persists all data to the specified data directory (`--data-dir`) and recovers it on restart. Graceful shutdown (Ctrl+C or SIGTERM) ensures proper cleanup and data integrity.
 
 ## Testing
 
