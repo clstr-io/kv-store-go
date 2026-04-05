@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -16,35 +15,39 @@ import (
 	"github.com/clstr-io/key-value-go/internal/store"
 )
 
+const port = "8080"
+
 func main() {
 	log.Print("Starting Key-Value Store...")
 
-	port := flag.String("port", "8080", "Port to run the server on")
-	peersFlag := flag.String("peers", "", "List of peer nodes")
-	dataDir := flag.String("data-dir", "/app/data", "Directory to store data")
-	flag.Parse()
+	dir := os.Getenv("DATA_DIR")
+	if dir == "" {
+		dir = "/app/data"
+	}
 
-	dir := *dataDir
 	ds, err := store.NewDiskStore(dir)
 	if err != nil {
 		log.Fatalf("Failed to create disk store: %v", err)
 	}
 
-	peers := strings.Split(*peersFlag, ",")
-	for i, peer := range peers {
-		peers[i] = fmt.Sprintf("http://%s", peer)
+	var peers []string
+	peersEnv := os.Getenv("PEERS")
+	if peersEnv != "" {
+		for _, peer := range strings.Split(peersEnv, ",") {
+			peers = append(peers, fmt.Sprintf("http://%s", peer))
+		}
 	}
 
 	server := api.New(ds)
 
 	go func() {
-		err = server.Serve(":" + *port)
+		err = server.Serve(":" + port)
 		if err != nil && err != http.ErrServerClosed {
 			log.Fatal(err)
 		}
 	}()
 
-	log.Printf("Server started on port %s", *port)
+	log.Printf("Server started on port %s", port)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT) // Graceful shutdown on SIGTERM or Ctrl+C
