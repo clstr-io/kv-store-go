@@ -56,7 +56,7 @@ type batchRequest struct {
 //   - checkpointMu: RWMutex preventing checkpoint during write operations
 //     (readers = operations in flight - Set/Delete/Clear/etc, writer = checkpoint goroutine)
 type DiskStore struct {
-	memory *MemoryStore
+	memory *memoryStore
 
 	dataDir      string
 	snapshotPath string
@@ -86,7 +86,7 @@ func NewDiskStore(dataDir string) (*DiskStore, error) {
 	}
 
 	ds := &DiskStore{
-		memory:       NewMemoryStore(),
+		memory:       newMemoryStore(),
 		dataDir:      dataDir,
 		snapshotPath: snapshotPath,
 		walPath:      logPath,
@@ -337,7 +337,7 @@ func (ds *DiskStore) appendToWAL(entry LogEntry) error {
 		go func() {
 			err := ds.checkpoint()
 			if err != nil {
-				log.Printf("checkpoint failed: %v", err)
+				log.Printf("Checkpoint failed: %v", err)
 			}
 		}()
 	}
@@ -402,7 +402,7 @@ func (ds *DiskStore) Close() error {
 
 		err := ds.saveSnapshot()
 		if err != nil {
-			log.Printf("failed to save snapshot: %v", err)
+			log.Printf("Failed to save snapshot: %v", err)
 			closeErr = err
 		}
 
@@ -416,7 +416,7 @@ func (ds *DiskStore) Close() error {
 
 		err = os.Truncate(ds.walPath, 0)
 		if err != nil {
-			log.Printf("failed to truncate WAL: %v", err)
+			log.Printf("Failed to truncate WAL: %v", err)
 		}
 	})
 
