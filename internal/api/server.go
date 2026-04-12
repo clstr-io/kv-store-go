@@ -2,18 +2,24 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
+	"time"
 
+	"github.com/clstr-io/key-value-go/internal/raft"
 	"github.com/clstr-io/key-value-go/internal/store"
 )
 
 const (
-	// maxValueSize limits the size of values to prevent DoS attacks (10 MB).
+	// maxValueSize limits the size of values to 10 MB.
 	maxValueSize = 10 * 1024 * 1024
+
+	shutdownTimeout = 5 * time.Second
 )
 
 var (
@@ -22,41 +28,26 @@ var (
 	keyPattern = regexp.MustCompile(`^[a-zA-Z0-9:_.-]+$`)
 )
 
-// Store defines the interface for a generic key-value store.
-type Store interface {
-	// Set adds or updates a key-value pair in the store.
-	Set(key string, value string) error
-
-	// Get retrieves the value associated with a given key.
-	Get(key string) (string, error)
-
-	// Delete removes a key-value pair from the store.
-	Delete(key string) error
-
-	// Clear removes all key-value pairs from the store.
-	Clear() error
-
-	// Close performs a clean shutdown of the store.
-	Close() error
-}
-
 // Server represents the key-value server.
 type Server struct {
-	api   *http.Server
-	store Store
-	stats *requestStats
+	api  *http.Server
+	node *raft.Node
 }
 
 // New creates a new instance of the Server.
-func New(store Store) *Server {
-	return &Server{
-		store: store,
-		stats: newRequestStats(),
+func New(id string, peers []string, dataDir string) (*Server, error) {
+	n, err := raft.NewNode(id, peers, dataDir)
+	if err != nil {
+		return nil, err
 	}
+
+	s := &Server{node: n}
+	s.setupRoutes()
+
+	return s, nil
 }
 
-// Serve starts the HTTP server and handles key-value store operations.
-func (s *Server) Serve(addr string) error {
+func (s *Server) setupRoutes() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/kv/", func(w http.ResponseWriter, r *http.Request) {
 		key := r.URL.Path[len("/kv/"):]
@@ -72,11 +63,11 @@ func (s *Server) Serve(addr string) error {
 
 		switch r.Method {
 		case http.MethodPut:
-			s.set(w, r)
+			s.handleSet(w, r)
 		case http.MethodGet:
-			s.get(w, r)
+			s.handleGet(w, r)
 		case http.MethodDelete:
-			s.delete(w, r)
+			s.handleDelete(w, r)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -85,7 +76,34 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("/clear", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodDelete:
-			s.clear(w, r)
+			s.handleClear(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/raft/request-vote", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			s.handleVoteRequest(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/raft/append-entries", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			s.handleAppendEntries(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/cluster/info", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			s.handleClusterInfo(w, r)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -100,18 +118,40 @@ func (s *Server) Serve(addr string) error {
 		}
 	})
 
-	s.api = &http.Server{Addr: addr, Handler: loggingMiddleware(s.stats)(mux)}
-
-	return s.api.ListenAndServe()
+	s.api = &http.Server{Addr: ":8080", Handler: mux}
 }
 
-// set handles the HTTP PUT request for setting a key-value pair.
-func (s *Server) set(w http.ResponseWriter, r *http.Request) {
+// redirectIfFollower redirects the request to the leader if this node is not the leader.
+// Returns true if a redirect was sent.
+func (s *Server) redirectIfFollower(w http.ResponseWriter, r *http.Request) bool {
+	leaderID, isLeader := s.node.LeaderID()
+	if isLeader {
+		return false
+	}
+
+	if leaderID == "" {
+		http.Error(w, "no leader elected", http.StatusServiceUnavailable)
+		return true
+	}
+
+	location := "http://" + leaderID + r.RequestURI
+	log.Printf("Redirecting to %s", location)
+	w.Header().Set("Location", location)
+	w.WriteHeader(http.StatusTemporaryRedirect)
+	return true
+}
+
+// handleSet handles the HTTP PUT request for setting a key-value pair.
+func (s *Server) handleSet(w http.ResponseWriter, r *http.Request) {
+	if s.redirectIfFollower(w, r) {
+		return
+	}
+
 	r.Body = http.MaxBytesReader(w, r.Body, maxValueSize)
 
 	value, err := io.ReadAll(r.Body)
 	if err != nil {
-		msg := fmt.Sprintf("unable to read request body: %v", err)
+		msg := fmt.Sprintf("cannot read request body: %v", err)
 		http.Error(w, msg, http.StatusInternalServerError)
 		return
 	}
@@ -121,9 +161,9 @@ func (s *Server) set(w http.ResponseWriter, r *http.Request) {
 	}
 
 	key := r.URL.Path[len("/kv/"):]
-	err = s.store.Set(key, string(value))
+	err = s.node.Set(key, string(value))
 	if err != nil {
-		msg := fmt.Sprintf("unable to set key: %v", err)
+		msg := fmt.Sprintf("cannot set key: %v", err)
 		http.Error(w, msg, http.StatusInternalServerError)
 		return
 	}
@@ -131,30 +171,39 @@ func (s *Server) set(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// get handles the HTTP GET request for retrieving a key-value pair.
-func (s *Server) get(w http.ResponseWriter, r *http.Request) {
+// handleGet handles the HTTP GET request for retrieving a key-value pair.
+func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
+	if s.redirectIfFollower(w, r) {
+		return
+	}
+
 	key := r.URL.Path[len("/kv/"):]
-	value, err := s.store.Get(key)
+	value, err := s.node.Get(key)
 	if err != nil {
 		if errors.Is(err, &store.NotFoundError{}) {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
 
-		msg := fmt.Sprintf("unable to get key: %v", err)
+		msg := fmt.Sprintf("cannot get key: %v", err)
 		http.Error(w, msg, http.StatusInternalServerError)
 		return
 	}
 
+	w.Header().Set("Content-Type", "text/plain")
 	w.Write([]byte(value))
 }
 
-// delete handles the HTTP DELETE request for deleting a key-value pair.
-func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
+// handleDelete handles the HTTP DELETE request for deleting a key-value pair.
+func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	if s.redirectIfFollower(w, r) {
+		return
+	}
+
 	key := r.URL.Path[len("/kv/"):]
-	err := s.store.Delete(key)
+	err := s.node.Delete(key)
 	if err != nil {
-		msg := fmt.Sprintf("unable to delete key: %v", err)
+		msg := fmt.Sprintf("cannot delete key: %v", err)
 		http.Error(w, msg, http.StatusInternalServerError)
 		return
 	}
@@ -162,11 +211,15 @@ func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// clear handles the HTTP POST request for clearing the store.
-func (s *Server) clear(w http.ResponseWriter, _ *http.Request) {
-	err := s.store.Clear()
+// handleClear handles the HTTP POST request for clearing the store.
+func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
+	if s.redirectIfFollower(w, r) {
+		return
+	}
+
+	err := s.node.Clear()
 	if err != nil {
-		msg := fmt.Sprintf("unable to clear store: %v", err)
+		msg := fmt.Sprintf("cannot clear store: %v", err)
 		http.Error(w, msg, http.StatusInternalServerError)
 		return
 	}
@@ -174,12 +227,60 @@ func (s *Server) clear(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// Shutdown gracefully shuts down the server.
-func (s *Server) Shutdown(ctx context.Context) error {
-	return s.api.Shutdown(ctx)
+func (s *Server) handleVoteRequest(w http.ResponseWriter, r *http.Request) {
+	var req raft.VoteRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	resp := s.node.Vote(req)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
-// PrintStats prints aggregate request statistics.
-func (s *Server) PrintStats() {
-	s.stats.printStats()
+func (s *Server) handleAppendEntries(w http.ResponseWriter, r *http.Request) {
+	var req raft.AppendEntriesRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	resp := s.node.AppendEntries(req)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleClusterInfo(w http.ResponseWriter, _ *http.Request) {
+	info := s.node.Info()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(info)
+}
+
+// Serve starts the HTTP server and the Raft loop, blocking until ctx is cancelled.
+func (s *Server) Serve(ctx context.Context) error {
+	go s.node.Loop(ctx)
+
+	go func() {
+		err := s.api.ListenAndServe()
+		if err != nil && err != http.ErrServerClosed {
+			log.Printf("Server error: %v", err)
+		}
+	}()
+
+	log.Printf("Listening on :8080")
+
+	<-ctx.Done()
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	err := s.node.Shutdown()
+	if err != nil {
+		return err
+	}
+
+	return s.api.Shutdown(shutdownCtx)
 }
