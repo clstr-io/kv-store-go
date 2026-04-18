@@ -13,6 +13,7 @@ import (
 )
 
 func main() {
+	log.SetFlags(0)
 	log.Print("Starting Key-Value Store...")
 
 	addr := os.Getenv("ADDR")
