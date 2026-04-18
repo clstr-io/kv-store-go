@@ -122,10 +122,6 @@ func (n *Node) becomeFollower(term int, leaderID *string) {
 		return
 	}
 
-	if term > n.currentTerm {
-		log.Printf("New term %d", term)
-	}
-
 	if leaderID != nil {
 		log.Printf("Following %s", *leaderID)
 	}
@@ -357,11 +353,11 @@ func (n *Node) Vote(req VoteRequest) VoteResponse {
 
 	log.Printf("Vote request from %s for term %d", req.CandidateID, req.Term)
 
-	if n.currentTerm > req.Term {
+	if req.Term < n.currentTerm {
 		return VoteResponse{Term: n.currentTerm, VoteGranted: false}
+	} else if req.Term > n.currentTerm {
+		n.becomeFollower(req.Term, nil)
 	}
-
-	n.becomeFollower(req.Term, nil)
 
 	if n.votedFor != nil && *n.votedFor != req.CandidateID {
 		return VoteResponse{Term: n.currentTerm, VoteGranted: false}
@@ -376,6 +372,11 @@ func (n *Node) Vote(req VoteRequest) VoteResponse {
 
 	log.Printf("Voted for %s in term %d", req.CandidateID, n.currentTerm)
 
+	select {
+	case n.resetElection <- struct{}{}:
+	default:
+	}
+
 	return VoteResponse{Term: n.currentTerm, VoteGranted: true}
 }
 
@@ -387,7 +388,12 @@ func (n *Node) AppendEntries(req AppendEntriesRequest) AppendEntriesResponse {
 		return AppendEntriesResponse{Term: n.currentTerm, Success: false}
 	}
 
-	n.becomeFollower(req.Term, &req.LeaderID)
+	if req.Term > n.currentTerm {
+		n.becomeFollower(req.Term, &req.LeaderID)
+	} else {
+		n.role = RoleFollower
+		n.leaderID = &req.LeaderID
+	}
 
 	select {
 	case n.resetElection <- struct{}{}:

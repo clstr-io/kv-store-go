@@ -45,8 +45,8 @@ $ DATA_DIR=./data ./key-value-go
 
 The server listens on port 8080. Configuration is via environment variables:
 
-- `DATA_DIR` — directory to persist data (default: `/app/data`)
-- `PEERS` — comma-separated list of peer node addresses (e.g. `host1:8080,host2:8080`)
+- `DATA_DIR`: directory to persist data (default: `/app/data`)
+- `PEERS`: comma-separated list of peer node addresses (e.g. `host1:8080,host2:8080`)
 
 The server persists all data to `DATA_DIR` and recovers it on restart. Graceful shutdown (Ctrl+C or SIGTERM) ensures proper cleanup and data integrity.
 
