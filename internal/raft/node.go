@@ -108,6 +108,8 @@ func NewNode(id string, peers []string, dataDir string) (*Node, error) {
 		n.role = RoleLeader
 		n.leaderID = &n.id
 		log.Print("Single-node mode, starting as leader")
+	} else {
+		n.role = RoleFollower
 	}
 
 	return &n, nil
