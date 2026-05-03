@@ -31,6 +31,12 @@ const (
 	RoleLeader
 )
 
+var roleNames = map[Role]string{
+	RoleFollower:  "follower",
+	RoleCandidate: "candidate",
+	RoleLeader:    "leader",
+}
+
 type VoteRequest struct {
 	Term         int    `json:"term"`
 	CandidateID  string `json:"candidate-id"`
@@ -108,6 +114,8 @@ func NewNode(id string, peers []string, dataDir string) (*Node, error) {
 		n.role = RoleLeader
 		n.leaderID = &n.id
 		log.Print("Single-node mode, starting as leader")
+	} else {
+		n.role = RoleFollower
 	}
 
 	return &n, nil
@@ -419,12 +427,6 @@ func (n *Node) Info() ClusterInfoResponse {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
-	roles := map[Role]string{
-		RoleFollower:  "follower",
-		RoleCandidate: "candidate",
-		RoleLeader:    "leader",
-	}
-
 	peers := make([]string, len(n.peers))
 	for i, p := range n.peers {
 		peers[i] = strings.TrimPrefix(p, "http://")
@@ -432,7 +434,7 @@ func (n *Node) Info() ClusterInfoResponse {
 
 	return ClusterInfoResponse{
 		ID:     n.id,
-		Role:   roles[n.role],
+		Role:   roleNames[n.role],
 		Term:   n.currentTerm,
 		Leader: n.leaderID,
 		Peers:  peers,

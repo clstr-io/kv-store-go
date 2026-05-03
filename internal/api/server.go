@@ -16,8 +16,7 @@ import (
 )
 
 const (
-	// maxValueSize limits the size of values to 10 MB.
-	maxValueSize = 10 * 1024 * 1024
+	maxValueSize = 10 * 1024 * 1024 // 10MB
 
 	shutdownTimeout = 5 * time.Second
 )
@@ -168,6 +167,7 @@ func (s *Server) handleSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -277,10 +277,10 @@ func (s *Server) Serve(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
-	err := s.node.Shutdown()
+	err := s.api.Shutdown(shutdownCtx)
 	if err != nil {
 		return err
 	}
 
-	return s.api.Shutdown(shutdownCtx)
+	return s.node.Shutdown()
 }
