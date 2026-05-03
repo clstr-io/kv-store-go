@@ -8,26 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
-	"time"
 )
 
 const (
 	// maxBatchSize limits how many operations we buffer before forcing an fsync.
-	// This prevents high latency under burst writes.
-	maxBatchSize = 100
-
-	// flushInterval is how long we wait before fsyncing a partial batch.
-	// 50ms balances latency and throughput:
-	// - Shorter (10ms): lower latency, less batching efficiency
-	// - Longer (200ms): higher throughput, worse tail latency
-	// This value works well for general-purpose workloads.
-	flushInterval = 50 * time.Millisecond
-
-	// opsPerCheckpoint determines when we create a snapshot and truncate the WAL.
-	// Every 1,000 operations keeps recovery time bounded.
-	// Note: More frequent checkpoints reduce recovery time but add I/O overhead.
-	opsPerCheckpoint = 1_000
+	maxBatchSize = 1_000
 )
 
 // LogEntry represents a single operation in the log.
@@ -48,17 +33,13 @@ type batchRequest struct {
 // Architecture:
 //   - Write-ahead log (WAL): All mutations are logged before applying to memory
 //   - Batching: Operations are batched and flushed together to amortize fsync cost
-//   - Checkpointing: Periodic snapshots prevent unbounded WAL growth
 //   - Recovery: Load latest snapshot, then replay WAL entries
 //
 // Locking strategy:
 //   - walMu: Serializes writes to the WAL file during batch flush
-//   - checkpointMu: RWMutex preventing checkpoint during write operations
-//     (readers = operations in flight - Set/Delete/Clear/etc, writer = checkpoint goroutine)
 type DiskStore struct {
 	memory *memoryStore
 
-	dataDir      string
 	snapshotPath string
 	walPath      string
 	wal          *os.File
@@ -66,10 +47,6 @@ type DiskStore struct {
 
 	batchChan chan *batchRequest
 	batchDone chan struct{}
-
-	opCount       atomic.Int64
-	checkpointing atomic.Bool  // prevents concurrent checkpoints
-	checkpointMu  sync.RWMutex // prevents checkpoint while operations are in-flight
 
 	closeOnce sync.Once
 }
@@ -87,11 +64,10 @@ func NewDiskStore(dataDir string) (*DiskStore, error) {
 
 	ds := &DiskStore{
 		memory:       newMemoryStore(),
-		dataDir:      dataDir,
 		snapshotPath: snapshotPath,
 		walPath:      logPath,
 		wal:          logFile,
-		batchChan:    make(chan *batchRequest, 5*maxBatchSize),
+		batchChan:    make(chan *batchRequest, 2*maxBatchSize),
 		batchDone:    make(chan struct{}),
 	}
 
@@ -142,11 +118,10 @@ func (ds *DiskStore) loadSnapshot() error {
 func (ds *DiskStore) saveSnapshot() error {
 	ds.memory.mu.RLock()
 	data, err := json.Marshal(ds.memory.data)
+	ds.memory.mu.RUnlock()
 	if err != nil {
-		ds.memory.mu.RUnlock()
 		return fmt.Errorf("failed to marshal snapshot: %w", err)
 	}
-	ds.memory.mu.RUnlock()
 
 	return atomicWriteFile(ds.snapshotPath, data, 0644)
 }
@@ -201,42 +176,38 @@ func (ds *DiskStore) replayWAL() error {
 }
 
 // batchWriter runs in the background to batch WAL writes and fsync.
-// This amortizes the expensive fsync call across multiple operations,
-// significantly improving throughput. We flush when either:
-//  1. The batch reaches maxBatchSize operations, OR
-//  2. flushInterval elapses with pending operations
-//
-// This trades individual operation latency for higher aggregate throughput.
+// It blocks until the first request arrives, then drains all immediately
+// available requests before flushing. This means sequential writes each get
+// their own prompt fsync, while concurrent bursts share a single fsync.
 func (ds *DiskStore) batchWriter() {
-	batch := make([]*batchRequest, 0, maxBatchSize)
-	ticker := time.NewTicker(flushInterval)
-	defer ticker.Stop()
+	batch := make([]*batchRequest, 0, 2*maxBatchSize)
 
 	for {
-		select {
-		case req, ok := <-ds.batchChan:
-			if !ok {
-				if len(batch) > 0 {
+		req, ok := <-ds.batchChan
+		if !ok {
+			close(ds.batchDone)
+			return
+		}
+		batch = append(batch, req)
+
+	drain:
+		for len(batch) < maxBatchSize {
+			select {
+			case req, ok := <-ds.batchChan:
+				if !ok {
 					ds.flushBatch(batch)
+					close(ds.batchDone)
+					return
 				}
 
-				close(ds.batchDone)
-
-				return
-			}
-
-			batch = append(batch, req)
-
-			if len(batch) >= maxBatchSize {
-				ds.flushBatch(batch)
-				batch = batch[:0]
-			}
-		case <-ticker.C:
-			if len(batch) > 0 {
-				ds.flushBatch(batch)
-				batch = batch[:0]
+				batch = append(batch, req)
+			default:
+				break drain
 			}
 		}
+
+		ds.flushBatch(batch)
+		batch = batch[:0]
 	}
 }
 
@@ -278,78 +249,15 @@ func (ds *DiskStore) flushBatch(batch []*batchRequest) {
 	}
 }
 
-// checkpoint creates a snapshot and truncates the WAL.
-// This prevents unbounded WAL growth and keeps recovery time bounded.
-// The process is:
-//  1. Take checkpointMu write lock (blocks new operations)
-//  2. Snapshot current in-memory state
-//  3. Truncate WAL (all operations now in snapshot)
-//  4. Reset operation counter
-//
-// If checkpoint fails mid-way, we're left in a safe state: worst case is
-// a stale snapshot with extra WAL entries (safe to replay).
-func (ds *DiskStore) checkpoint() error {
-	defer ds.checkpointing.Store(false)
-
-	ds.checkpointMu.Lock()
-	defer ds.checkpointMu.Unlock()
-
-	ds.walMu.Lock()
-	defer ds.walMu.Unlock()
-
-	err := ds.saveSnapshot()
-	if err != nil {
-		return fmt.Errorf("checkpoint failed: %w", err)
-	}
-
-	err = ds.wal.Close()
-	if err != nil {
-		return fmt.Errorf("failed to close WAL during checkpoint: %w", err)
-	}
-
-	err = os.Truncate(ds.walPath, 0)
-	if err != nil {
-		return fmt.Errorf("failed to truncate WAL during checkpoint: %w", err)
-	}
-
-	ds.wal, err = os.OpenFile(ds.walPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to reopen WAL during checkpoint: %w", err)
-	}
-
-	ds.opCount.Store(0)
-
-	return nil
-}
-
 // appendToWAL records an operation to the WAL.
 func (ds *DiskStore) appendToWAL(entry LogEntry) error {
 	req := &batchRequest{entry: entry, errChan: make(chan error, 1)}
 	ds.batchChan <- req
-
-	err := <-req.errChan
-	if err != nil {
-		return err
-	}
-
-	newCount := ds.opCount.Add(1)
-	if newCount%opsPerCheckpoint == 0 && ds.checkpointing.CompareAndSwap(false, true) {
-		go func() {
-			err := ds.checkpoint()
-			if err != nil {
-				log.Printf("Checkpoint failed: %v", err)
-			}
-		}()
-	}
-
-	return nil
+	return <-req.errChan
 }
 
 // Set adds or updates a key-value pair in the store.
 func (ds *DiskStore) Set(key, value string) error {
-	ds.checkpointMu.RLock()
-	defer ds.checkpointMu.RUnlock()
-
 	err := ds.appendToWAL(LogEntry{Op: "set", Key: key, Value: value})
 	if err != nil {
 		return err
@@ -365,9 +273,6 @@ func (ds *DiskStore) Get(key string) (string, error) {
 
 // Delete removes a key-value pair from the store.
 func (ds *DiskStore) Delete(key string) error {
-	ds.checkpointMu.RLock()
-	defer ds.checkpointMu.RUnlock()
-
 	err := ds.appendToWAL(LogEntry{Op: "delete", Key: key})
 	if err != nil {
 		return err
@@ -378,9 +283,6 @@ func (ds *DiskStore) Delete(key string) error {
 
 // Clear removes all key-value pairs from the store.
 func (ds *DiskStore) Clear() error {
-	ds.checkpointMu.RLock()
-	defer ds.checkpointMu.RUnlock()
-
 	err := ds.appendToWAL(LogEntry{Op: "clear"})
 	if err != nil {
 		return err
@@ -397,18 +299,13 @@ func (ds *DiskStore) Close() error {
 		close(ds.batchChan)
 		<-ds.batchDone
 
-		ds.checkpointMu.Lock()
-		defer ds.checkpointMu.Unlock()
-
 		err := ds.saveSnapshot()
 		if err != nil {
 			log.Printf("Failed to save snapshot: %v", err)
 			closeErr = err
 		}
 
-		ds.walMu.Lock()
 		err = ds.wal.Close()
-		ds.walMu.Unlock()
 		if err != nil {
 			closeErr = err
 			return
@@ -460,7 +357,6 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
 
-	// Fsync the directory to ensure the directory entry is durable.
 	d, err := os.Open(dir)
 	if err != nil {
 		return fmt.Errorf("failed to open directory for fsync: %w", err)
